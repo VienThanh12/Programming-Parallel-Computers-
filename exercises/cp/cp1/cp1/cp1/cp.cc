@@ -7,4 +7,13 @@ This is the function you need to implement. Quick reference:
 - only elements with 0 <= j <= i < ny need to be filled
 */
 void correlate(int ny, int nx, const float *data, float *result) {
+    for (int i = 0; i < ny; i++)    {
+        for (int j = 0; j <= i; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < nx; k++) {
+                sum += data[k + i * nx] * data[k + j * nx];
+            }
+            result[i + j * ny] = sum;
+        }
+    }
 }
