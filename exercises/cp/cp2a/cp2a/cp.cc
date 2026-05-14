@@ -20,7 +20,6 @@ void correlate(int ny, int nx, const float *data, float *result) {
     // Normalized rows, padded with 0.0 (zeros do not contribute to the dot product).
     std::vector<double> nor_data(static_cast<size_t>(ny) * nxp, 0.0);
 
-    #pragma omp parallel for
     for (int i = 0; i < ny; i++) {
         // Mean of row i
         double mean = 0.0;
@@ -48,7 +47,6 @@ void correlate(int ny, int nx, const float *data, float *result) {
     }
 
     // Dot products with nb independent accumulators → break the FP-add dep chain.
-    #pragma omp parallel for
     for (int i = 0; i < ny; i++) {
         for (int j = 0; j <= i; j++) {
             double vv[nb];
