@@ -57,19 +57,11 @@ void correlate(int ny, int nx, const float *data, float *result) {
         }
     }
 
-
-    constexpr int nd = 3;
-
     // Vectorized dot products in double precision.
     #pragma omp parallel for
-    for (int ic = 0; ic < ny; ic += nd) {
-        for (int jc = 0; jc <= ic; jc += nd) {
-            double8_t vsum[nd][nd];
-            for (int id = 0; id < nd; ++id) {
-                for (int jd = 0; jd < nd; ++jd) {
-                    vsum[id][jd] = d8zero;
-                }
-            }
+    for (int i = 0; i < ny; i++) {
+        for (int j = 0; j <= i; j++) {
+            double8_t vsum = d8zero;
             const double8_t *ri = &nor_data[i * na];
             const double8_t *rj = &nor_data[j * na];
             for (int k = 0; k < na; k++) {
