@@ -70,31 +70,12 @@ void correlate(int ny, int nx, const float *data, float *result) {
                     vsum[id][jd] = d8zero;
                 }
             }
-
-
+            const double8_t *ri = &nor_data[i * na];
+            const double8_t *rj = &nor_data[j * na];
             for (int k = 0; k < na; k++) {
-                double8_t x0 = (ic + 0 < ny) ? nor_data[(ic + 0) * na + k] : d8zero;
-                double8_t x1 = (ic + 1 < ny) ? nor_data[(ic + 1) * na + k] : d8zero;
-                double8_t x2 = (ic + 2 < ny) ? nor_data[(ic + 2) * na + k] : d8zero;
-
-                double8_t y0 = (jc + 0 < ny) ? nor_data[(jc + 0) * na + k] : d8zero;
-                double8_t y1 = (jc + 1 < ny) ? nor_data[(jc + 1) * na + k] : d8zero;
-                double8_t y2 = (jc + 2 < ny) ? nor_data[(jc + 2) * na + k] : d8zero;
-
-                vsum[0][0] += x0 * y0;  vsum[0][1] += x0 * y1;  vsum[0][2] += x0 * y2;
-                vsum[1][0] += x1 * y0;  vsum[1][1] += x1 * y1;  vsum[1][2] += x1 * y2;
-                vsum[2][0] += x2 * y0;  vsum[2][1] += x2 * y1;  vsum[2][2] += x2 * y2;
+                vsum += ri[k] * rj[k];
             }
-            for (int id = 0; id < nd; ++id) {
-                for (int jd = 0; jd < nd; ++jd) {
-                        int i = ic + id;
-                        int j = jc + jd;
-                        
-                        if (i < ny && j <= i) {
-                            result[i + j * ny] = static_cast<float>(hsum8(vsum[id][jd]));
-                        }
-                    }
-            }
+            result[i + j * ny] = static_cast<float>(hsum8(vsum));
         }
     }
 }
