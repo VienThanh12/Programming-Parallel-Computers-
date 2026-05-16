@@ -20,6 +20,19 @@ static inline double hsum8(double8_t v) {
     return v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
 }
 
+static inline double8_t load_partial(const float* base, int start, int nx) {
+    double tmp[8] = {0};
+    for (int i = 0; i < 8 && (start + i) < nx; ++i) {
+        tmp[i] = static_cast<double>(base[start + i]);
+    }
+    // Giả sử bạn có hàm tạo double8_t từ mảng hoặc dùng intrinsic nạp dữ liệu
+    // Ở đây viết dạng tường minh, trình biên dịch sẽ tự tối ưu thành lệnh vector
+    double8_t res;
+    for (int i = 0; i < 8; ++i) res[i] = tmp[i];
+    return res;
+}
+
+
 void correlate(int ny, int nx, const float *data, float *result) {
     // Width of one SIMD lane group (8 doubles per double8_t).
     constexpr int nb = 8;
@@ -30,34 +43,85 @@ void correlate(int ny, int nx, const float *data, float *result) {
     // do not contribute to the dot product.
     std::vector<double8_t> nor_data(static_cast<size_t>(ny) * na, d8zero);
 
-    #pragma omp parallel for
+   // Hàm bổ trợ để nạp dữ liệu an toàn (tránh out-of-bounds) vào vector
+// Nếu vượt quá nx, tự động điền số 0 (không làm ảnh hưởng đến phép cộng tổng)
+
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < ny; i++) {
-        // Mean of row i
-        double mean = 0.0;
-        for (int j = 0; j < nx; j++) {
-            mean += data[j + i * nx];
-        }
-        mean /= static_cast<double>(nx);
+        const float* row_in = &data[i * nx];
+        double* row_out = reinterpret_cast<double*>(&nor_data[i * na]);
 
-        // Centered values + squared sum (all in double)
-        double sum_sq = 0.0;
-        std::vector<double> centered(nx);
-        for (int j = 0; j < nx; j++) {
-            double val = static_cast<double>(data[j + i * nx]) - mean;
-            centered[j] = val;
-            sum_sq += val * val;
+        // --- BƯỚC 1: TÍNH MEAN BẰNG VECTOR ---
+        double8_t vmean = d8zero;
+        // Chạy qua các khối 8 phần tử
+        for (int j = 0; j < nx; j += 8) {
+            if (j + 8 <= nx) {
+                // Trường hợp lý tưởng: nạp thẳng 8 phần tử float, ép kiểu sang double
+                // (Tùy thuộc vào cách bạn định nghĩa toán tử nạp, ví dụ dưới đây là tường minh)
+                double8_t v;
+                for(int b=0; b<8; ++b) v[b] = static_cast<double>(row_in[j + b]);
+                vmean += v;
+            } else {
+                vmean += load_partial(row_in, j, nx);
+            }
         }
+        // Cộng ngang vector để lấy tổng số đơn lẻ (scalar)
+        double mean = hsum8(vmean) / static_cast<double>(nx);
+        double8_t vmean_broadcast; // Tạo một vector chứa toàn giá trị mean
+        for(int b=0; b<8; ++b) vmean_broadcast[b] = mean;
 
-        // Normalize in double; store directly into the SIMD buffer.
+        // --- BƯỚC 2: TÍNH SUM_SQ BẰNG VECTOR ---
+        double8_t vsum_sq = d8zero;
+        for (int j = 0; j < nx; j += 8) {
+            double8_t v;
+            if (j + 8 <= nx) {
+                for(int b=0; b<8; ++b) v[b] = static_cast<double>(row_in[j + b]);
+            } else {
+                v = load_partial(row_in, j, nx);
+            }
+            
+            double8_t vcentered = v - vmean_broadcast;
+            
+            // Nếu ở đoạn đuôi ma trận (phần dư), ta phải xóa các giá trị rác ngoài biên nx về 0
+            // để không làm sai lệch tổng sum_sq
+            if (j + 8 > nx) {
+                for (int b = nx - j; b < 8; ++b) vcentered[b] = 0.0;
+            }
+            
+            vsum_sq += vcentered * vcentered;
+        }
+        double sum_sq = hsum8(vsum_sq);
+
+        // --- BƯỚC 3: CHUẨN HÓA VÀ GHI THẲNG VÀO BUFFER (VECTOR) ---
         double norm = std::sqrt(sum_sq);
         double inv = (norm > 0.0) ? (1.0 / norm) : 0.0;
-        double *row = reinterpret_cast<double *>(&nor_data[i * na]);
-        for (int j = 0; j < nx; j++) {
-            row[j] = centered[j] * inv;
+        double8_t vinv_broadcast;
+        for(int b=0; b<8; ++b) vinv_broadcast[b] = inv;
+
+        // Duyệt lượt cuối để ghi kết quả (ghi đủ cho cả các phần padding của nor_data)
+        // na là số lượng vector double8_t trên một hàng của nor_data
+        for (int ka = 0; ka < na; ka++) {
+            int j = ka * 8;
+            double8_t v;
+            if (j + 8 <= nx) {
+                for(int b=0; b<8; ++b) v[b] = static_cast<double>(row_in[j + b]);
+                double8_t vres = (v - vmean_broadcast) * vinv_broadcast;
+                
+                // Ép trình biên dịch ghi thẳng vector 512-bit vào RAM (vmoveapd)
+                *reinterpret_cast<double8_t*>(&row_out[j]) = vres;
+            } else {
+                // Xử lý đoạn cuối hàng: vừa chuẩn hóa vừa điền 0.0 vào phần padding
+                double8_t v_partial = load_partial(row_in, j, nx);
+                double8_t vres = (v_partial - vmean_broadcast) * vinv_broadcast;
+                
+                // Phần dư vượt quá nx thì gán bằng 0.0 (Yêu cầu bắt buộc của Version 3 & 4)
+                for (int b = nx - j; b < 8; ++b) {
+                    vres[b] = 0.0;
+                }
+                *reinterpret_cast<double8_t*>(&row_out[j]) = vres;
+            }
         }
     }
-
-
     constexpr int nd = 3;
 
     // Vectorized dot products in double precision.

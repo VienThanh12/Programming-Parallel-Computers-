@@ -20,48 +20,52 @@ static inline double hsum8(double8_t v) {
     return v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
 }
 
+static inline double8_t load_partial(const float* base, int start, int nx) {
+    double tmp[8] = {0};
+    for (int i = 0; i < 8 && (start + i) < nx; ++i) {
+        tmp[i] = static_cast<double>(base[start + i]);
+    }
+    // Giả sử bạn có hàm tạo double8_t từ mảng hoặc dùng intrinsic nạp dữ liệu
+    // Ở đây viết dạng tường minh, trình biên dịch sẽ tự tối ưu thành lệnh vector
+    double8_t res;
+    for (int i = 0; i < 8; ++i) res[i] = tmp[i];
+    return res;
+}
+
 void correlate(int ny, int nx, const float *data, float *result) {
-    // Width of one SIMD lane group (8 doubles per double8_t).
     constexpr int nb = 8;
-    // Number of double8_t vectors per padded row.
     int na = (nx + nb - 1) / nb;
 
-    // Normalized rows, packed as double8_t. Padding lanes are zero so they
-    // do not contribute to the dot product.
     std::vector<double8_t> nor_data(static_cast<size_t>(ny) * na, d8zero);
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < ny; i++) {
-        // Mean of row i
-        double mean = 0.0;
+        const float* row_in = &data[i * nx];
+        
+        double sum = 0.0;
         for (int j = 0; j < nx; j++) {
-            mean += data[j + i * nx];
+            sum += static_cast<double>(row_in[j]);
         }
-        mean /= static_cast<double>(nx);
+        double mean = sum / static_cast<double>(nx);
 
-        // Centered values + squared sum (all in double)
         double sum_sq = 0.0;
-        std::vector<double> centered(nx);
         for (int j = 0; j < nx; j++) {
-            double val = static_cast<double>(data[j + i * nx]) - mean;
-            centered[j] = val;
-            sum_sq += val * val;
+            double centered = static_cast<double>(row_in[j]) - mean;
+            sum_sq += centered * centered;
         }
 
-        // Normalize in double; store directly into the SIMD buffer.
         double norm = std::sqrt(sum_sq);
         double inv = (norm > 0.0) ? (1.0 / norm) : 0.0;
-        double *row = reinterpret_cast<double *>(&nor_data[i * na]);
+
+        double* row_out = reinterpret_cast<double*>(&nor_data[i * na]);
         for (int j = 0; j < nx; j++) {
-            row[j] = centered[j] * inv;
+            row_out[j] = (static_cast<double>(row_in[j]) - mean) * inv;
         }
     }
-
-
     constexpr int nd = 3;
 
     // Vectorized dot products in double precision.
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic)
     for (int ic = 0; ic < ny; ic += nd) {
         for (int jc = 0; jc <= ic; jc += nd) {
             double8_t vsum[nd][nd];
