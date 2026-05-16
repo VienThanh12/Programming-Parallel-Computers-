@@ -25,8 +25,6 @@ static inline double8_t load_partial(const float* base, int start, int nx) {
     for (int i = 0; i < 8 && (start + i) < nx; ++i) {
         tmp[i] = static_cast<double>(base[start + i]);
     }
-    // Giả sử bạn có hàm tạo double8_t từ mảng hoặc dùng intrinsic nạp dữ liệu
-    // Ở đây viết dạng tường minh, trình biên dịch sẽ tự tối ưu thành lệnh vector
     double8_t res;
     for (int i = 0; i < 8; ++i) res[i] = tmp[i];
     return res;
