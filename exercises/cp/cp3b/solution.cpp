@@ -1,11 +1,100 @@
-#include <cstdlib>
+/*
+This is the function you need to implement. Quick reference:
+- input rows: 0 <= y < ny
+- input columns: 0 <= x < nx
+- element at row y and column x is stored in data[x + y*nx]
+- the correlation between rows i and j has to be stored in result[i + j*ny]
+- only elements with 0 <= j <= i < ny need to be filled
+*/
+// $$r_{ij} = \frac{\sum (x_i - \bar{x}_i)(x_j - \bar{x}_j)}{\sqrt{\sum (x_i - \bar{x}_i)^2 \sum (x_j - \bar{x}_j)^2}}$$
+#include <cmath>
 #include <vector>
-#include <algorithm>
-#include <numeric>
 
-// TODO: add the function signature from the exercise description
-// Reference: https://ppc.cs.aalto.fi
+typedef float float8_t __attribute__ ((vector_size (8 * sizeof(float))));
+typedef double double8_t __attribute__ ((vector_size (8 * sizeof(double))));
 
-void solve() {
-    // your solution here
+constexpr float8_t f8zero {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+constexpr double8_t d8zero {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+static inline float hsum8(float8_t v) {
+    return v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
+}
+
+void correlate(int ny, int nx, const float *data, float *result) {
+    // Width of one SIMD lane group (8 doubles per double8_t).
+    constexpr int nb = 8;
+    // Number of double8_t vectors per padded row.
+    int na = (nx + nb - 1) / nb;
+
+    // Normalized rows, packed as float8_t. Padding lanes are zero so they
+    // do not contribute to the dot product.
+    std::vector<float8_t> nor_data(static_cast<size_t>(ny) * na, f8zero);
+
+    #pragma omp parallel for
+    for (int i = 0; i < ny; i++) {
+        // Mean of row i
+        float mean = 0.0;
+        for (int j = 0; j < nx; j++) {
+            mean += data[j + i * nx];
+        }
+        mean /= static_cast<float>(nx);
+
+        // Centered values + squared sum (all in float)
+        float sum_sq = 0.0;
+        std::vector<float> centered(nx);
+        for (int j = 0; j < nx; j++) {
+            float val = static_cast<float>(data[j + i * nx]) - mean;
+            centered[j] = val;
+            sum_sq += val * val;
+        }
+
+        // Normalize in float; store directly into the SIMD buffer.
+        float norm = std::sqrt(sum_sq);
+        float inv = (norm > 0.0f) ? (1.0f / norm) : 0.0f;
+        float *row = reinterpret_cast<float *>(&nor_data[i * na]);
+        for (int j = 0; j < nx; j++) {
+            row[j] = centered[j] * inv;
+        }
+    }
+
+
+    constexpr int nd = 3;
+
+    // Vectorized dot products in float precision.
+    #pragma omp parallel for
+    for (int ic = 0; ic < ny; ic += nd) {
+        for (int jc = 0; jc <= ic; jc += nd) {
+            float8_t vsum[nd][nd];
+            for (int id = 0; id < nd; ++id) {
+                for (int jd = 0; jd < nd; ++jd) {
+                    vsum[id][jd] = f8zero;
+                }
+            }
+
+
+            for (int k = 0; k < na; k++) {
+                float8_t x0 = (ic + 0 < ny) ? nor_data[(ic + 0) * na + k] : f8zero;
+                float8_t x1 = (ic + 1 < ny) ? nor_data[(ic + 1) * na + k] : f8zero;
+                float8_t x2 = (ic + 2 < ny) ? nor_data[(ic + 2) * na + k] : f8zero;
+
+                float8_t y0 = (jc + 0 < ny) ? nor_data[(jc + 0) * na + k] : f8zero;
+                float8_t y1 = (jc + 1 < ny) ? nor_data[(jc + 1) * na + k] : f8zero;
+                float8_t y2 = (jc + 2 < ny) ? nor_data[(jc + 2) * na + k] : f8zero;
+
+                vsum[0][0] += x0 * y0;  vsum[0][1] += x0 * y1;  vsum[0][2] += x0 * y2;
+                vsum[1][0] += x1 * y0;  vsum[1][1] += x1 * y1;  vsum[1][2] += x1 * y2;
+                vsum[2][0] += x2 * y0;  vsum[2][1] += x2 * y1;  vsum[2][2] += x2 * y2;
+            }
+            for (int id = 0; id < nd; ++id) {
+                for (int jd = 0; jd < nd; ++jd) {
+                        int i = ic + id;
+                        int j = jc + jd;
+                        
+                        if (i < ny && j <= i) {
+                            result[i + j * ny] = static_cast<float>(hsum8(vsum[id][jd]));
+                        }
+                    }
+            }
+        }
+    }
 }
