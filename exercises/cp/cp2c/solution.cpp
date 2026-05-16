@@ -30,6 +30,7 @@ void correlate(int ny, int nx, const float *data, float *result) {
     // do not contribute to the dot product.
     std::vector<double8_t> nor_data(static_cast<size_t>(ny) * na, d8zero);
 
+    #pragma omp parallel for
     for (int i = 0; i < ny; i++) {
         // Mean of row i
         double mean = 0.0;
@@ -56,7 +57,10 @@ void correlate(int ny, int nx, const float *data, float *result) {
         }
     }
 
+    
+
     // Vectorized dot products in double precision.
+    #pragma omp parallel for
     for (int i = 0; i < ny; i++) {
         for (int j = 0; j <= i; j++) {
             double8_t vsum = d8zero;
